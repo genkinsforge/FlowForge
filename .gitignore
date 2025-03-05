@@ -1,0 +1,27 @@
+# Ignore the virtual environment folder
+venv/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore build and distribution folders
+build/
+dist/
+*.egg-info/
+flowforge.egg-info/
+
+# Ignore IDE-specific files
+.vscode/
+.idea/
+
+# Ignore local environment variables
+.env
+
+# Ignore pytest cache
+.pytest_cache/
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/

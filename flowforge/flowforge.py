@@ -30,8 +30,11 @@ Future extensions may add additional features and diagram types.
 import xml.etree.ElementTree as ET
 import base64
 import zlib
+import gzip
 import re
 import logging
+import binascii
+from urllib.parse import unquote
 
 
 # --- Custom Exception Classes ---
@@ -64,7 +67,6 @@ def parse_style(style_str):
                 key, value = token.split('=', 1)
                 style_dict[key] = value
             else:
-                # For tokens that are flags without explicit values.
                 if token:
                     style_dict[token] = True
     return style_dict
@@ -89,7 +91,6 @@ class FlowForgeConverter:
     """
 
     def __init__(self, log_level=logging.INFO, strict_mode=True):
-        # Set up logger
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(log_level)
         if not self.logger.handlers:
@@ -99,10 +100,8 @@ class FlowForgeConverter:
             self.logger.addHandler(handler)
 
         self.strict_mode = strict_mode
-        # Internal dictionaries for nodes and groups (populated during conversion)
         self.node_map = {}
         self.diagram = {"nodes": [], "edges": [], "groups": {}}
-        # List of diagram pages (each page is the decompressed XML string for a <diagram> tag)
         self.diagram_pages = []
 
     # --- File and Data Loading Methods ---
@@ -127,42 +126,183 @@ class FlowForgeConverter:
     def _decompress_data(self, xml_data):
         """
         Checks if the XML data is compressed. If the <mxGraphModel> tag is not found,
-        it assumes the content inside <diagram> is compressed (base64 + deflate) and
-        decompresses it. If multiple <diagram> tags are found, they are stored in self.diagram_pages.
+        it assumes the content inside <diagram> is compressed (base64 + deflate).
+        In relaxed mode, tries multiple known wbits parameters to handle variations
+        in compression headers (raw deflate, zlib, gzip) and then a gzip fallback.
 
-        :param xml_data: The raw XML content.
-        :return: None. Populates self.diagram_pages with decompressed XML strings.
-        :raises DiagramDecompressionError: If decompression fails.
+        Populates self.diagram_pages with decompressed XML strings.
         """
-        # Find all <diagram> tags
+        if "<mxGraphModel" in xml_data:
+            self.logger.debug("Found uncompressed <mxGraphModel> tag directly in the file.")
+            self.diagram_pages.append(xml_data)
+            return
+
+        # Handle compressed data
         diagrams = re.findall(r"<diagram[^>]*>(.*?)</diagram>", xml_data, re.DOTALL)
+        
+        if not diagrams:
+            self.logger.debug("No <diagram> tags found. Checking if entire file is an mxfile.")
+            # Try parsing as mxfile directly - some files use mxfile as root element
+            try:
+                root = ET.fromstring(xml_data)
+                if root.tag == 'mxfile':
+                    self.logger.debug("File is an mxfile. Extracting diagrams.")
+                    for diagram in root.findall('diagram'):
+                        diagram_content = diagram.text if diagram.text else ""
+                        diagrams.append(diagram_content)
+            except ET.ParseError as e:
+                self.logger.debug(f"Failed to parse XML looking for mxfile: {str(e)}")
+        
         if diagrams:
             self.logger.debug(f"Found {len(diagrams)} <diagram> tag(s). Attempting decompression.")
-            for d in diagrams:
+            for d_index, d in enumerate(diagrams):
                 d = d.strip()
+                is_decompressed = False
+                
+                if not d:  # Skip empty diagram data
+                    self.logger.warning(f"Diagram {d_index} is empty. Skipping.")
+                    continue
+                
+                # Try direct XML parse if it looks like uncompressed XML
+                if d.startswith('<') and '<mxGraphModel' in d:
+                    self.logger.debug(f"Diagram {d_index} appears to be uncompressed XML. Adding directly.")
+                    self.diagram_pages.append(d)
+                    continue
+                
+                # Try URL decoding first (some draw.io files use URL encoding)
                 try:
-                    decoded = base64.b64decode(d)
-                    # -15 indicates raw DEFLATE stream (no header)
-                    decompressed = zlib.decompress(decoded, -15).decode('utf-8')
-                    # Check for the presence of <mxGraphModel> in decompressed string
-                    if "<mxGraphModel" in decompressed:
-                        self.diagram_pages.append(decompressed)
-                        self.logger.info("Decompressed a diagram page successfully.")
-                    else:
-                        self.logger.warning("Decompressed data does not contain <mxGraphModel>; skipping page.")
-                        if self.strict_mode:
-                            raise DiagramDecompressionError("Invalid decompressed diagram content.")
+                    d_decoded = unquote(d)
+                    if '<mxGraphModel' in d_decoded:
+                        self.logger.debug(f"Diagram {d_index} was URL encoded. Adding decoded version.")
+                        self.diagram_pages.append(d_decoded)
+                        continue
                 except Exception as e:
-                    self.logger.error("Failed to decompress a diagram page: " + str(e))
+                    self.logger.debug(f"URL decoding attempt failed: {str(e)}")
+                
+                # Try base64 decoding
+                try:
+                    # Handle padding issues - draw.io might not include proper padding
+                    padding_needed = len(d) % 4
+                    if padding_needed:
+                        d += '=' * (4 - padding_needed)
+                    
+                    # Try to decode as base64
+                    try:
+                        decoded = base64.b64decode(d)
+                    except binascii.Error:
+                        # Sometimes drawio uses urlsafe base64
+                        try:
+                            decoded = base64.urlsafe_b64decode(d)
+                        except binascii.Error as e:
+                            self.logger.debug(f"Both standard and urlsafe base64 decoding failed: {str(e)}")
+                            raise
+                except Exception as e:
+                    self.logger.error(f"Base64 decoding failed for diagram {d_index}: {str(e)}")
                     if self.strict_mode:
                         raise DiagramDecompressionError(str(e))
+                    else:
+                        continue
+
+                # Check if it's already XML (uncompressed but base64 encoded)
+                try:
+                    xml_check = decoded.decode('utf-8', errors='ignore')
+                    if xml_check.startswith('<') and '<mxGraphModel' in xml_check:
+                        self.logger.debug(f"Diagram {d_index} was base64 encoded XML. Adding decoded version.")
+                        self.diagram_pages.append(xml_check)
+                        is_decompressed = True
+                        continue
+                except UnicodeDecodeError:
+                    # Not UTF-8 text, continue with decompression attempts
+                    pass
+
+                # Try various decompression methods
+                decompression_attempts = [
+                    # (wbits, description)
+                    (-15, "raw deflate"),
+                    (47, "deflate with zlib header & 32k window"),
+                    (31, "deflate with zlib header & 16k window"),
+                    (15, "deflate with zlib header & 8k window"),
+                    (0, "auto-detect zlib/gzip header")
+                ]
+                
+                for wbits, desc in decompression_attempts:
+                    if is_decompressed:
+                        break
+                    try:
+                        if wbits == 0:
+                            # Auto-detect header
+                            decompressed = zlib.decompress(decoded, zlib.MAX_WBITS | 32)
+                        else:
+                            decompressed = zlib.decompress(decoded, wbits)
+                        
+                        xml_text = decompressed.decode('utf-8', errors='replace')
+                        if "<mxGraphModel" in xml_text:
+                            self.diagram_pages.append(xml_text)
+                            self.logger.info(f"Successfully decompressed diagram {d_index} using {desc}.")
+                            is_decompressed = True
+                        else:
+                            self.logger.warning(
+                                f"Decompression with {desc} succeeded, but no <mxGraphModel> found in diagram {d_index}."
+                            )
+                    except Exception as e:
+                        self.logger.debug(f"Decompression attempt with {desc} failed: {str(e)}")
+                
+                # Try gzip if still not decompressed and it looks like gzip
+                if not is_decompressed and len(decoded) >= 2 and decoded[:2] == b'\x1f\x8b':
+                    try:
+                        decompressed = gzip.decompress(decoded)
+                        xml_text = decompressed.decode('utf-8', errors='replace')
+                        if "<mxGraphModel" in xml_text:
+                            self.diagram_pages.append(xml_text)
+                            self.logger.info(f"Successfully decompressed diagram {d_index} using gzip.")
+                            is_decompressed = True
+                        else:
+                            self.logger.warning(f"Gzip decompression succeeded, but no <mxGraphModel> found in diagram {d_index}.")
+                    except Exception as e:
+                        self.logger.debug(f"Gzip decompression attempt failed: {str(e)}")
+                
+                # Try PAKO/PAKO 0.2.0 variant (some newer draw.io files)
+                if not is_decompressed:
+                    try:
+                        inflator = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                        decompressed = inflator.decompress(decoded)
+                        xml_text = decompressed.decode('utf-8', errors='replace')
+                        if "<mxGraphModel" in xml_text:
+                            self.diagram_pages.append(xml_text)
+                            self.logger.info(f"Successfully decompressed diagram {d_index} using PAKO variant.")
+                            is_decompressed = True
+                    except Exception as e:
+                        self.logger.debug(f"PAKO variant decompression attempt failed: {str(e)}")
+                
+                # Last resort: try to interpret as plain XML even if it looks like garbage
+                if not is_decompressed and not self.strict_mode:
+                    try:
+                        # Just a sanity check - see if there's any XML-like content
+                        cleaned = re.sub(r'[^\x20-\x7E]', '', decoded.decode('latin-1', errors='ignore'))
+                        if '<' in cleaned and '>' in cleaned:
+                            self.logger.warning(f"Diagram {d_index} couldn't be properly decompressed but contains XML-like content. Attempting to process.")
+                            self.diagram_pages.append(cleaned)
+                            is_decompressed = True
+                    except Exception as e:
+                        self.logger.debug(f"Last resort XML interpretation failed: {str(e)}")
+                
+                if not is_decompressed:
+                    msg = (
+                        f"Failed to decompress diagram {d_index} with all known parameters. "
+                        "Likely corrupt or unsupported compression format."
+                    )
+                    self.logger.error(msg)
+                    if self.strict_mode:
+                        raise DiagramDecompressionError(msg)
+                    # In relaxed mode, skip this diagram page
         else:
-            # If no <diagram> tags are found, assume the file is already uncompressed.
-            self.logger.debug("No <diagram> tag found; assuming uncompressed XML.")
+            self.logger.debug("No <diagram> tags or mxfile format detected.")
+            # Last attempt: check if it's a plain XML file with mxGraphModel
             if "<mxGraphModel" in xml_data:
                 self.diagram_pages.append(xml_data)
+                self.logger.info("Found uncompressed mxGraphModel in the input.")
             else:
-                msg = "Input data does not contain valid Draw.io XML."
+                msg = "Input data does not contain valid Draw.io XML, <diagram> tags, or an mxfile."
                 self.logger.error(msg)
                 if self.strict_mode:
                     raise DiagramDecompressionError(msg)
@@ -174,7 +314,6 @@ class FlowForgeConverter:
         :param xml_data: The raw file content.
         :return: List of indices representing available diagram pages.
         """
-        # Clear any previous pages
         self.diagram_pages = []
         self._decompress_data(xml_data)
         page_indices = list(range(len(self.diagram_pages)))
@@ -191,7 +330,34 @@ class FlowForgeConverter:
         :raises DiagramParsingError: If XML parsing fails.
         """
         try:
+            # Try to clean up any potential XML issues before parsing
+            xml_data = xml_data.replace('&nbsp;', '&#160;')  # Common in draw.io files
+            
+            # Handle XML declaration if missing
+            if not xml_data.strip().startswith('<?xml') and '<mxGraphModel' in xml_data:
+                xml_data = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_data
+            
+            # If we only have the mxGraphModel part, wrap it
+            if xml_data.strip().startswith('<mxGraphModel') and not xml_data.strip().startswith('<diagram'):
+                xml_data = f'<diagram>{xml_data}</diagram>'
+            
             root = ET.fromstring(xml_data)
+            
+            # If root is diagram, get the mxGraphModel inside it
+            if root.tag == 'diagram':
+                for child in root:
+                    if child.tag == 'mxGraphModel':
+                        root = child
+                        break
+            # If root is mxfile, find the first diagram and its mxGraphModel
+            elif root.tag == 'mxfile':
+                diagram = root.find('diagram')
+                if diagram is not None:
+                    # Check if mxGraphModel is a child or encoded in text
+                    mx_model = diagram.find('mxGraphModel')
+                    if mx_model is not None:
+                        root = mx_model
+            
             self.logger.info("XML parsing completed successfully.")
             return root
         except ET.ParseError as e:
@@ -208,11 +374,20 @@ class FlowForgeConverter:
         :param root: ElementTree root element of a diagram page.
         :return: A dictionary representing the diagram.
         """
-        # Reset internal state
         self.node_map = {}
         self.diagram = {"nodes": [], "edges": [], "groups": {}}
 
+        # If we're starting from a diagram tag, find the mxGraphModel
+        if root.tag == 'diagram':
+            model = root.find('mxGraphModel')
+            if model is not None:
+                root = model
+        
         diagram_root = root.find("root")
+        if diagram_root is None:
+            # Some versions might have cells directly under mxGraphModel
+            diagram_root = root
+            
         if diagram_root is None:
             msg = "No <root> element found in the XML."
             self.logger.error(msg)
@@ -225,7 +400,6 @@ class FlowForgeConverter:
             if cell_id in ("0", "1"):
                 continue
 
-            # Process vertices (nodes)
             if cell.get("vertex") == "1":
                 label = cell.get("value") or ""
                 style = cell.get("style") or ""
@@ -241,7 +415,6 @@ class FlowForgeConverter:
                 self.diagram["nodes"].append(node)
                 self.node_map[cell_id] = node
 
-            # Process edges (connectors)
             elif cell.get("edge") == "1":
                 edge = {
                     "id": cell_id,
@@ -258,11 +431,9 @@ class FlowForgeConverter:
         self.logger.info("Built diagram: %d nodes, %d edges.",
                          len(self.diagram["nodes"]), len(self.diagram["edges"]))
 
-        # Identify groups (e.g., swimlanes or container nodes) and support nested groups.
         for node in self.diagram["nodes"]:
             parent = node.get("parent")
             if parent and parent in self.node_map:
-                # Mark node as child of a group if parent's style indicates grouping.
                 parent_style = self.node_map[parent].get("style", "")
                 if "group" in parent_style or "swimlane" in parent_style:
                     if parent not in self.diagram["groups"]:
@@ -284,20 +455,16 @@ class FlowForgeConverter:
         """
         label = node["label"].strip() if node["label"] else f"Node_{node['id']}"
         style = node["style_dict"]
-        # Ensure the node ID is a valid Mermaid identifier (prefix with letter)
         node_id = "N" + node["id"]
 
-        # Determine shape based on style properties.
         shape = style.get("shape", "").lower()
         if shape == "rhombus":
-            # Decision diamond
             node_def = f'{node_id}{{"{label}"}}'
         elif shape == "ellipse" or "ellipse" in style:
             node_def = f'{node_id}(( "{label}" ))'
         elif style.get("rounded") == "1" or shape == "stadium":
             node_def = f'{node_id}("{label}")'
         else:
-            # Default rectangle
             node_def = f'{node_id}["{label}"]'
         return node_def
 
@@ -313,7 +480,6 @@ class FlowForgeConverter:
         label = edge["label"].strip()
         style = edge["style_dict"]
 
-        # Default arrow is solid directed arrow
         arrow = "-->"
         if style.get("dashed") or style.get("dashed") == "1":
             arrow = "-.->"
@@ -339,12 +505,9 @@ class FlowForgeConverter:
         indent = "    " * indent_level
         lines = []
         lines.append(f"{indent}subgraph {group_id}[{group['label']}]")
-        # Emit child nodes first
         for child in group.get("children", []):
-            # Check if this child itself is a group container.
             child_id = child["id"]
             if child_id in self.diagram["groups"]:
-                # Recursive call for nested group.
                 nested_group = self.diagram["groups"][child_id]
                 lines.extend(self._emit_subgraph_recursive(child_id, nested_group, indent_level + 1))
             else:
@@ -375,7 +538,6 @@ class FlowForgeConverter:
 
         nodes_emitted = set()
 
-        # Emit groups (subgraphs) recursively
         for group_id, group in diagram.get("groups", {}).items():
             try:
                 group_lines = self._emit_subgraph_recursive(group_id, group, indent_level=0)
@@ -385,7 +547,6 @@ class FlowForgeConverter:
             except Exception as e:
                 self.logger.warning(f"Error emitting subgraph for group {group_id}: {str(e)}")
 
-        # Emit nodes not in any group
         for node in diagram.get("nodes", []):
             if node["id"] not in nodes_emitted:
                 try:
@@ -394,7 +555,6 @@ class FlowForgeConverter:
                 except Exception as e:
                     self.logger.warning(f"Error formatting node {node['id']}: {str(e)}")
 
-        # Emit edges
         for edge in diagram.get("edges", []):
             try:
                 if edge["source"] not in self.node_map or edge["target"] not in self.node_map:
@@ -459,7 +619,6 @@ class FlowForgeConverter:
 if __name__ == "__main__":
     import sys
 
-    # Configure logging at DEBUG level for detailed output
     converter = FlowForgeConverter(log_level=logging.DEBUG, strict_mode=False)
     try:
         file_path = "example.drawio"  # Replace with your Draw.io file path.
@@ -471,4 +630,3 @@ if __name__ == "__main__":
         print(mermaid_output)
     except Exception as error:
         sys.exit(f"An error occurred during conversion: {error}")
-

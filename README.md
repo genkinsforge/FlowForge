@@ -1,3 +1,6 @@
+Here’s the properly formatted and well-structured `README.md` for **FlowForge**:
+
+```markdown
 # FlowForge
 
 **FlowForge** is a robust and extensible Python framework for converting Draw.io (Diagram.net) diagrams to Mermaid diagrams. This library supports multi-page diagrams, enhanced style parsing, recursive group/subgraph handling, and configurable logging with error correction modes.
@@ -45,20 +48,28 @@
 
 ## Installation
 
-Clone the repository:
+You can install FlowForge directly from PyPI:
 
 ```bash
-git clone https://github.com/genkinsforge/FlowForge.git
-cd FlowForge
+pip install flowforge
 ```
 
-Install the required dependencies (if any):
+Alternatively, if you want to install FlowForge from the source:
 
-```bash
-pip install -r requirements.txt
-```
+1. Clone the repository:
 
-> **Note:** FlowForge is built using Python’s standard library modules, so external dependencies are minimal.
+    ```bash
+    git clone https://github.com/genkinsforge/FlowForge.git
+    cd FlowForge
+    ```
+
+2. Install FlowForge using pip:
+
+    ```bash
+    pip install .
+    ```
+
+*Note: FlowForge is built entirely on Python's standard library, so no external dependencies are required.*
 
 ---
 
@@ -92,31 +103,27 @@ This script loads a Draw.io diagram file, lists the available pages, and convert
 
 ## API Overview
 
-### FlowForgeConverter
+### `FlowForgeConverter`
+- **Constructor Parameters:**
+  - `log_level`: Logging level (e.g., `logging.DEBUG`, `logging.INFO`).
+  - `strict_mode`: Boolean flag indicating whether conversion errors should raise exceptions (`True`) or be logged and skipped (`False`).
 
-**Constructor Parameters:**
+- **Key Methods:**
+  - `load_file(file_path)`: Reads a Draw.io file and returns its content as a string.
+  - `list_diagram_pages(xml_data)`: Extracts available diagram pages from the input XML and returns their indices.
+  - `convert(input_data, diagram_index=0, direction="TD", diagram_type="flowchart")`: Main conversion method to generate Mermaid code from the specified diagram page.
 
-- `log_level`: Logging level (e.g., `logging.DEBUG`, `logging.INFO`).
-- `strict_mode`: Boolean flag indicating whether conversion errors should raise exceptions (`True`) or be logged and skipped (`False`).
+- **Internal Workflow:**
+  1. **Decompression & Multi-Page Extraction:**  
+     Detects and decompresses base64/deflate data if necessary.
+  2. **XML Parsing:**  
+     Uses `xml.etree.ElementTree` to parse the XML.
+  3. **Diagram Building:**  
+     Builds an internal representation of nodes, edges, and groups.
+  4. **Mermaid Emission:**  
+     Formats nodes and edges (with recursive subgraph handling) into valid Mermaid syntax.
 
-**Key Methods:**
-
-- `load_file(file_path)`: Reads a Draw.io file and returns its content as a string.
-- `list_diagram_pages(xml_data)`: Extracts available diagram pages from the input XML and returns their indices.
-- `convert(input_data, diagram_index=0, direction="TD", diagram_type="flowchart")`: Main conversion method to generate Mermaid code from the specified diagram page.
-
-**Internal Workflow:**
-
-1. **Decompression & Multi-Page Extraction:**  
-   Detects and decompresses base64/deflate data if necessary.
-2. **XML Parsing:**  
-   Uses `xml.etree.ElementTree` to parse the XML.
-3. **Diagram Building:**  
-   Builds an internal representation of nodes, edges, and groups.
-4. **Mermaid Emission:**  
-   Formats nodes and edges (with recursive subgraph handling) into valid Mermaid syntax.
-
-For detailed documentation on each method, please refer to the inline code documentation in `flowforge.py`.
+For detailed documentation on each method, please refer to the inline code documentation in [flowforge.py](flowforge.py).
 
 ---
 
@@ -124,7 +131,7 @@ For detailed documentation on each method, please refer to the inline code docum
 
 FlowForge uses Python’s built-in `logging` module. Set the desired logging level in the constructor. In strict mode (`strict_mode=True`), conversion errors will cause the process to halt; in relaxed mode, errors are logged as warnings and the process continues.
 
-**Example:**
+Example:
 
 ```python
 converter = FlowForgeConverter(log_level=logging.DEBUG, strict_mode=False)
@@ -134,8 +141,8 @@ converter = FlowForgeConverter(log_level=logging.DEBUG, strict_mode=False)
 
 ## License
 
-This project is released under the MIT License.  
-Attribution is required to **Genkins Forge LLC**.  
+This project is released under the **MIT License**.  
+**Attribution is required to Genkins Forge LLC.**  
 Please see the [LICENSE](LICENSE) file for the full license text.
 
 ---
@@ -145,8 +152,7 @@ Please see the [LICENSE](LICENSE) file for the full license text.
 Contributions are welcome! Please fork the repository and open a pull request with your improvements or bug fixes. For major changes, please open an issue first to discuss your ideas.
 
 When contributing, please ensure:
-
-- Code follows the [PEP 8](https://peps.python.org/pep-0008/) style guide.
+- Code follows the PEP 8 style guide.
 - New features include appropriate tests and documentation.
 - All contributions include attribution to **Genkins Forge LLC**.
 
@@ -159,8 +165,4 @@ For further inquiries or support, please contact [info@genkinsforge.com](mailto:
 
 ---
 
-Enjoy converting your Draw.io diagrams to Mermaid with **FlowForge**!
-
----
-
-With these updates, both your code and README are aligned under the new **FlowForge** branding. You can now proceed to create your GitHub repository at [https://github.com/genkinsforge/FlowForge](https://github.com/genkinsforge/FlowForge) and continue to expand the library with additional features.
+*Enjoy converting your Draw.io diagrams to Mermaid with FlowForge!*

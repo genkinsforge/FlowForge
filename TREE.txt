@@ -1,0 +1,11 @@
+FlowForge/
+├── flowforge/
+│   ├── __init__.py   # (with: from .flowforge import FlowForgeConverter)
+│   └── flowforge.py  # (contains the FlowForgeConverter class)
+├── examples/
+│   └── convert_drawio_to_mermaid.py
+├── LICENSE
+├── README.md
+├── setup.py
+└── pyproject.toml
+
