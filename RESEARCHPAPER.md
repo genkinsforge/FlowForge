@@ -130,7 +130,7 @@ Converting a draw.io diagram to Mermaid involves mapping the structural elements
 - **Node Identifiers:** In Mermaid code, each node is referenced by an identifier. We have a choice: we could use the draw.io cell IDs (like “IQM8xkm7...” or “5”) as Mermaid node IDs, but these are usually not human-friendly. Instead, the converter might generate simple IDs based on the node’s label or type (e.g., `Start`, `ProcessEnd`, `Decision1` etc.). The Mermaid node syntax allows us to separate the internal ID from the displayed text. For example, `processEnd[Process End]` defines a node with ID “processEnd” and visible label “Process End”. We can leverage this by creating safe IDs (alphanumeric, no spaces) for each node. If two draw.io nodes have identical labels, we’d need to uniquify the IDs (e.g., append an index) to avoid clashes in Mermaid.
 
 - **Groups and Containers:** Draw.io allows grouping elements (e.g., using a “group” or “swimlane” shape). These appear as a parent-child relationship in the XML (a group cell is a vertex whose child cells have `parent` set to that group’s id). Mermaid has the notion of **subgraphs** (for flowcharts) which can cluster nodes together under a name. A conversion strategy is: if a draw.io vertex is purely a container (e.g., style indicates a group or swimlane, and it contains other vertices), we can output a Mermaid subgraph. For example, a group with `value="Subsystem A"` that contains nodes 5,6,7 could be converted as: 
-  ```mermaid
+  ```
   subgraph Subsystem_A["Subsystem A"]
       Node5[...]
       Node6[...]
