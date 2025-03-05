@@ -1,6 +1,3 @@
-Here’s the properly formatted and well-structured `README.md` for **FlowForge**:
-
-```markdown
 # FlowForge
 
 **FlowForge** is a robust and extensible Python framework for converting Draw.io (Diagram.net) diagrams to Mermaid diagrams. This library supports multi-page diagrams, enhanced style parsing, recursive group/subgraph handling, and configurable logging with error correction modes.
