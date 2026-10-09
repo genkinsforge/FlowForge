@@ -13,6 +13,11 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/genkinsforge/FlowForge",
     packages=setuptools.find_packages(),  # This will find the "flowforge" package
+    entry_points={
+        "console_scripts": [
+            "flowforge=flowforge.cli:main",
+        ],
+    },
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
